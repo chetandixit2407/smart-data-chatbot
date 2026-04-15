@@ -2,30 +2,37 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import matplotlib.pyplot as plt
-import ast
+import re
 
 from langchain_ollama import OllamaLLM
 from langchain_community.utilities import SQLDatabase
 from langchain_experimental.sql import SQLDatabaseChain
-from langchain_core.prompts import PromptTemplate   # ✅ FIXED IMPORT
+from langchain_core.prompts import PromptTemplate
 
 # -------------------------------
 # ✅ Page Config
 # -------------------------------
 st.set_page_config(page_title="AI Dashboard", layout="wide")
-st.title("📊 AI Power BI Dashboard")
+st.title("📊 AI Power BI Dashboard (Stable Version)")
+
+# -------------------------------
+# ✅ SQL Extractor (FIX)
+# -------------------------------
+def extract_sql(text):
+    match = re.search(r"(SELECT .*?;)", str(text), re.IGNORECASE | re.DOTALL)
+    return match.group(1) if match else None
 
 # -------------------------------
 # ✅ Load LLM
 # -------------------------------
 @st.cache_resource
 def load_llm():
-    return OllamaLLM(model="mistral")
+    return OllamaLLM(model="llama3")  # 🔥 better than mistral
 
 llm = load_llm()
 
 # -------------------------------
-# ✅ Load DB Chain (FIXED)
+# ✅ Load DB Chain
 # -------------------------------
 @st.cache_resource
 def load_db_chain():
@@ -60,6 +67,7 @@ Question: {input}
         db,
         prompt=prompt,
         use_query_checker=True,
+        return_sql=True,   # 🔥 FIX
         return_direct=False
     )
 
@@ -71,17 +79,18 @@ uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "xl
 if uploaded_file:
 
     # -------------------------------
-    # ✅ Read file
+    # ✅ Read File
     # -------------------------------
     if uploaded_file.name.endswith(".csv"):
         df = pd.read_csv(uploaded_file)
     else:
         df = pd.read_excel(uploaded_file)
 
+    # Clean column names
     df.columns = [col.lower().replace(" ", "_") for col in df.columns]
 
     # -------------------------------
-    # ✅ Store in DB
+    # ✅ Store in SQLite
     # -------------------------------
     conn = sqlite3.connect("data.db")
 
@@ -90,10 +99,10 @@ if uploaded_file:
         st.session_state.last_file = uploaded_file.name
 
     # -------------------------------
-    # 👀 Preview (LIMITED)
+    # 👀 Preview
     # -------------------------------
     st.subheader("Preview Data")
-    st.dataframe(df.head(100))   # 🔥 LIMIT
+    st.dataframe(df.head(100))
 
     # -------------------------------
     # 📊 KPI
@@ -110,7 +119,7 @@ if uploaded_file:
         col3.metric("Max", round(df[num_cols[0]].max(), 2))
 
     # -------------------------------
-    # 📈 Charts (LIMITED)
+    # 📈 Charts
     # -------------------------------
     st.markdown("## 📈 Visualizations")
 
@@ -140,7 +149,7 @@ if uploaded_file:
             st.pyplot(fig)
 
     if len(num_cols) > 0:
-        st.line_chart(df[num_cols].head(200))  # 🔥 LIMIT
+        st.line_chart(df[num_cols].head(200))
 
     # -------------------------------
     # 🤖 AI Chatbot
@@ -160,27 +169,35 @@ if uploaded_file:
 
             response = db_chain.invoke({"query": user_input})
 
-            raw = response.get("result", response)
-
             # -------------------------------
-            # ✅ SAFE PARSE
+            # ✅ Extract SQL
             # -------------------------------
-            try:
-                data = ast.literal_eval(str(raw))
-            except:
-                data = []
+            sql_query = response.get("sql", None)
 
-            # 🔥 LIMIT RESULT
-            if isinstance(data, list):
-                data = data[:50]
+            if not sql_query:
+                sql_query = extract_sql(str(response))
 
-            # 🔥 HANDLE SINGLE VALUE
-            if isinstance(data, list) and len(data) > 0:
-                if isinstance(data[0], tuple) and len(data[0]) == 1:
-                    data = [{"value": data[0][0]}]
+            if not sql_query:
+                st.error("❌ Failed to generate SQL")
+            else:
+                st.code(sql_query, language="sql")
 
-            st.session_state.chat_history.append(("You", user_input))
-            st.session_state.chat_history.append(("Bot", data))
+                # सुरक्षा checks
+                if not sql_query.lower().startswith("select"):
+                    st.error("❌ Unsafe query detected!")
+                elif "drop" in sql_query.lower():
+                    st.error("❌ Dangerous query blocked!")
+                else:
+                    try:
+                        result_df = pd.read_sql_query(sql_query, conn)
+
+                        result_df = result_df.head(50)
+
+                        st.session_state.chat_history.append(("You", user_input))
+                        st.session_state.chat_history.append(("Bot", result_df))
+
+                    except Exception as e:
+                        st.error(f"❌ SQL Error: {e}")
 
     # -------------------------------
     # 💬 Chat Output
@@ -189,14 +206,12 @@ if uploaded_file:
         if role == "You":
             st.markdown(f"**🧑 You:** {msg}")
         else:
-            if isinstance(msg, list) and len(msg) > 0:
+            if isinstance(msg, pd.DataFrame):
+                st.dataframe(msg)
 
-                df_res = pd.DataFrame(msg).head(50)
-                st.dataframe(df_res)
-
-                if df_res.shape[1] >= 2:
+                if msg.shape[1] >= 2:
                     fig, ax = plt.subplots()
-                    df_res.plot(kind="bar", ax=ax)
+                    msg.plot(kind="bar", ax=ax)
                     st.pyplot(fig)
             else:
                 st.markdown(f"**🤖 Bot:** {msg}")
