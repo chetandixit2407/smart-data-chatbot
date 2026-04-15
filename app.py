@@ -13,7 +13,7 @@ from langchain_core.prompts import PromptTemplate
 # ✅ Page Config
 # -------------------------------
 st.set_page_config(page_title="AI Dashboard", layout="wide")
-st.title("📊 AI Power BI Dashboard (Stable Version)")
+st.title("📊 AI Power BI Dashboard")
 
 # -------------------------------
 # ✅ SQL Extractor (FIX)
